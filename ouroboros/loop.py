@@ -580,12 +580,16 @@ def run_llm_loop(
         round_idx += 1
 
         # Get LLM response (may include tool calls)
-        text, usage, tool_calls = llm.chat(
+        msg, usage = llm.chat(
             messages=messages,
+            model=llm.model,
             tools=tools.get_schemas(),
-            effort=initial_effort if round_idx == 1 else None,
+            reasoning_effort=initial_effort if round_idx == 1 else "medium",
         )
         add_usage(accumulated_usage, usage)
+
+        text = msg.get("content") or ""
+        tool_calls = msg.get("tool_calls") or []
 
         # Handle text-only final response
         if not tool_calls:
