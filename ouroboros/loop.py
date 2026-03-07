@@ -548,6 +548,47 @@ def _process_tool_results(
     return errors
 
 
+def _chat_round(
+    llm: LLMClient,
+    messages: List[Dict[str, Any]],
+    tools: ToolRegistry,
+    active_model: str,
+    reasoning_effort: str,
+) -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
+    """Call llm.chat with compatibility across old/new client signatures."""
+    import inspect
+
+    chat_sig = inspect.signature(llm.chat)
+    params = chat_sig.parameters
+
+    kwargs: Dict[str, Any] = {
+        "messages": messages,
+        "tools": tools.get_schemas(),
+    }
+    if "model" in params:
+        kwargs["model"] = active_model
+    if "reasoning_effort" in params:
+        kwargs["reasoning_effort"] = reasoning_effort
+    elif "effort" in params:
+        kwargs["effort"] = reasoning_effort
+
+    result = llm.chat(**kwargs)
+
+    # New shape: (msg_dict, usage)
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], dict):
+        msg, usage = result
+        text = msg.get("content") or ""
+        tool_calls = msg.get("tool_calls") or []
+        return text, usage or {}, tool_calls
+
+    # Legacy shape: (text, usage, tool_calls)
+    if isinstance(result, tuple) and len(result) == 3:
+        text, usage, tool_calls = result
+        return str(text or ""), usage or {}, tool_calls or []
+
+    raise TypeError(f"Unexpected llm.chat return shape: {type(result)}")
+
+
 def run_llm_loop(
     messages: List[Dict[str, Any]],
     tools: ToolRegistry,
@@ -576,14 +617,25 @@ def run_llm_loop(
     # Stagnation guard: last modifying tool round
     last_modifying_round = -1
 
+    # Track model/effort used by this loop (can be overridden by switch_model tool)
+    default_model_fn = getattr(llm, "default_model", None)
+    active_model = default_model_fn() if callable(default_model_fn) else os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
+    active_effort = initial_effort
+
     while True:
         round_idx += 1
 
+        # Respect runtime overrides set by tools (e.g. switch_model)
+        active_model = tools._ctx.active_model_override or active_model
+        active_effort = tools._ctx.active_effort_override or active_effort
+
         # Get LLM response (may include tool calls)
-        text, usage, tool_calls = llm.chat(
+        text, usage, tool_calls = _chat_round(
+            llm=llm,
             messages=messages,
-            tools=tools.get_schemas(),
-            effort=initial_effort if round_idx == 1 else None,
+            tools=tools,
+            active_model=active_model,
+            reasoning_effort=active_effort if round_idx == 1 else "medium",
         )
         add_usage(accumulated_usage, usage)
 
@@ -660,8 +712,8 @@ def run_llm_loop(
                 round_idx=round_idx,
                 messages=messages,
                 llm=llm,
-                active_model=llm.model,
-                active_effort=initial_effort,
+                active_model=active_model,
+                active_effort=active_effort,
                 max_retries=3,
                 drive_logs=drive_logs,
                 task_id=task_id,
