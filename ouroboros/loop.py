@@ -590,9 +590,9 @@ def run_llm_loop(
         # Get LLM response (may include tool calls)
         msg, usage = llm.chat(
             messages=messages,
-            model=active_model,
+            model=llm.model,
             tools=tools.get_schemas(),
-            reasoning_effort=active_effort if round_idx == 1 else "medium",
+            reasoning_effort=initial_effort if round_idx == 1 else "medium",
         )
         add_usage(accumulated_usage, usage)
 
