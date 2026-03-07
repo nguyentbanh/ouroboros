@@ -580,7 +580,7 @@ def run_llm_loop(
         round_idx += 1
 
         # Get LLM response (may include tool calls)
-        text, usage, tool_calls = llm.chat_completion(
+        text, usage, tool_calls = llm.chat(
             messages=messages,
             tools=tools.get_schemas(),
             effort=initial_effort if round_idx == 1 else None,

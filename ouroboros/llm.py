@@ -151,6 +151,9 @@ class LLMClient:
             pass
         return None
 
+    def chat_completion(self, *args, **kwargs):
+        return self.chat(*args, **kwargs)
+
     def chat(
         self,
         messages: List[Dict[str, Any]],
