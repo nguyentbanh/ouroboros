@@ -576,8 +576,16 @@ def run_llm_loop(
     # Stagnation guard: last modifying tool round
     last_modifying_round = -1
 
+    # Track model/effort used by this loop (can be overridden by switch_model tool)
+    active_model = llm.default_model()
+    active_effort = initial_effort
+
     while True:
         round_idx += 1
+
+        # Respect runtime overrides set by tools (e.g. switch_model)
+        active_model = tools._ctx.active_model_override or active_model
+        active_effort = tools._ctx.active_effort_override or active_effort
 
         # Get LLM response (may include tool calls)
         msg, usage = llm.chat(
@@ -664,8 +672,8 @@ def run_llm_loop(
                 round_idx=round_idx,
                 messages=messages,
                 llm=llm,
-                active_model=llm.model,
-                active_effort=initial_effort,
+                active_model=active_model,
+                active_effort=active_effort,
                 max_retries=3,
                 drive_logs=drive_logs,
                 task_id=task_id,
