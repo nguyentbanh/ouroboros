@@ -143,6 +143,10 @@ class ToolRegistry:
                 result.append({"type": "function", "function": e.schema})
         return result
 
+    def get_schemas(self, core_only: bool = False) -> List[Dict[str, Any]]:
+        """Backward-compatible alias for callers that still use get_schemas()."""
+        return self.schemas(core_only=core_only)
+
     def list_non_core_tools(self) -> List[Dict[str, str]]:
         """Return name+description of all non-core tools."""
         result = []
