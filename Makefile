@@ -1,7 +1,7 @@
 # Ouroboros — common development commands
 # Usage: make test, make lint, make health
 
-.PHONY: test lint health clean
+.PHONY: test lint health clean self-awareness
 
 # Run smoke tests (fast, no external deps needed at runtime)
 test:
@@ -23,3 +23,7 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
 	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+
+# Generate SELF_AWARENESS.md dashboard from current runtime state
+self-awareness:
+	python3 scripts/generate_self_awareness.py
