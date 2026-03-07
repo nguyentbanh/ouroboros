@@ -147,7 +147,7 @@ def get_recent_events(limit: int = 10) -> list[dict]:
         events_path = LOGS_DIR / "events.jsonl"
         if not events_path.exists():
             return []
-        lines = events_path.read_text().encoding="utf-8").splitlines()[-limit:]
+        lines = events_path.read_text(encoding="utf-8").splitlines()[-limit:]
         events = []
         for line in lines:
             try:
