@@ -618,8 +618,7 @@ def run_llm_loop(
     last_modifying_round = -1
 
     # Track model/effort used by this loop (can be overridden by switch_model tool)
-    default_model_fn = getattr(llm, "default_model", None)
-    active_model = default_model_fn() if callable(default_model_fn) else os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
+    active_model = llm.default_model()
     active_effort = initial_effort
 
     while True:
@@ -630,14 +629,16 @@ def run_llm_loop(
         active_effort = tools._ctx.active_effort_override or active_effort
 
         # Get LLM response (may include tool calls)
-        text, usage, tool_calls = _chat_round(
-            llm=llm,
+        msg, usage = llm.chat(
             messages=messages,
-            tools=tools,
-            active_model=active_model,
-            reasoning_effort=active_effort if round_idx == 1 else "medium",
+            model=llm.model,
+            tools=tools.get_schemas(),
+            reasoning_effort=initial_effort if round_idx == 1 else "medium",
         )
         add_usage(accumulated_usage, usage)
+
+        text = msg.get("content") or ""
+        tool_calls = msg.get("tool_calls") or []
 
         # Handle text-only final response
         if not tool_calls:
