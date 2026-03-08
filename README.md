@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.4.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.5.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -190,6 +190,7 @@ Full text: [BIBLE.md](BIBLE.md)
 |----------|-------------|
 | `OPENAI_API_KEY` | Enables the `web_search` tool |
 | `ANTHROPIC_API_KEY` | Enables Claude Code CLI for code editing |
+| `CODEX_OAUTH_TOKEN` | Enables direct OpenAI Codex access when `OUROBOROS_USE_CODEX_OAUTH=true` |
 
 ### Optional Configuration (environment variables)
 
@@ -205,6 +206,7 @@ Full text: [BIBLE.md](BIBLE.md)
 | `OUROBOROS_BG_BUDGET_PCT` | `10` | Percentage of total budget allocated to background consciousness |
 | `OUROBOROS_MAX_ROUNDS` | `200` | Maximum LLM rounds per task |
 | `OUROBOROS_MODEL_FALLBACK_LIST` | `google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6` | Fallback model chain for empty responses |
+| `OUROBOROS_USE_CODEX_OAUTH` | `false` | Set to `true` to use `CODEX_OAUTH_TOKEN` with OpenAI API instead of OpenRouter |
 
 ---
 
@@ -225,6 +227,13 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.5.0 -- Codex OAuth Integration
+
+- **Added Codex OAuth support**: LLMClient now recognizes `OUROBOROS_USE_CODEX_OAUTH` and `CODEX_OAUTH_TOKEN` environment variables. When enabled, the agent uses OpenAI's API directly with the Codex token instead of OpenRouter.
+- Maintained OpenRouter as the default backend; no configuration change required for existing deployments.
+- Adjusted provider pinning and cost handling for Codex mode (cost estimation relies on static tables).
+- Bump minor version to reflect new capability that expands operational flexibility and reduces vendor lock-in.
 
 ### v6.4.0 -- Self-Awareness Dashboard
 
