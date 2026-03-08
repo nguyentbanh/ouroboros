@@ -1,7 +1,7 @@
 """
 Ouroboros — LLM client.
 
-The only module that communicates with the LLM API (OpenRouter).
+The only module that communicates with the LLM API (OpenRouter or OpenAI Codex).
 Contract: chat(), default_model(), available_models(), add_usage().
 """
 
@@ -103,15 +103,30 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
 
 
 class LLMClient:
-    """OpenRouter API wrapper. All LLM calls go through this class."""
+    """OpenRouter API wrapper (or OpenAI Codex via OAuth). All LLM calls go through this class."""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        base_url: str = "https://openrouter.ai/api/v1",
+        base_url: Optional[str] = None,
     ):
-        self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        self._base_url = base_url
+        # Check for Codex OAuth mode
+        use_codex_oauth = os.environ.get("OUROBOROS_USE_CODEX_OAUTH", "").lower() == "true"
+        codex_token = os.environ.get("CODEX_OAUTH_TOKEN", "")
+
+        if use_codex_oauth and codex_token:
+            # Codex OAuth mode: use OpenAI API with Codex token
+            self._api_key = codex_token
+            self._base_url = "https://api.openai.com/v1"
+            self._using_codex_oauth = True
+            log.info("LLMClient initialized in Codex OAuth mode (OpenAI API)")
+        else:
+            # Default: OpenRouter
+            self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+            self._base_url = base_url or "https://openrouter.ai/api/v1"
+            self._using_codex_oauth = False
+            log.info("LLMClient initialized in OpenRouter mode")
+
         self._client = None
 
     def _get_client(self):
@@ -129,6 +144,9 @@ class LLMClient:
 
     def _fetch_generation_cost(self, generation_id: str) -> Optional[float]:
         """Fetch cost from OpenRouter Generation API as fallback."""
+        if self._using_codex_oauth:
+            # Cost estimation for Codex: not available via OpenAI API; skip
+            return None
         try:
             import requests
             url = f"{self._base_url.rstrip('/')}/generation?id={generation_id}"
@@ -171,8 +189,8 @@ class LLMClient:
             "reasoning": {"effort": effort, "exclude": True},
         }
 
-        # Pin Anthropic models to Anthropic provider for prompt caching
-        if model.startswith("anthropic/"):
+        # Pin Anthropic models to Anthropic provider for prompt caching (OpenRouter only)
+        if not self._using_codex_oauth and model.startswith("anthropic/"):
             extra_body["provider"] = {
                 "order": ["Anthropic"],
                 "allow_fallbacks": False,
@@ -186,14 +204,17 @@ class LLMClient:
             "extra_body": extra_body,
         }
         if tools:
-            # Add cache_control to last tool for Anthropic prompt caching
+            # Add cache_control to last tool for Anthropic prompt caching (OpenRouter only)
             # This caches all tool schemas (they never change between calls)
-            tools_with_cache = [t for t in tools]  # shallow copy
-            if tools_with_cache:
-                last_tool = {**tools_with_cache[-1]}  # copy last tool
-                last_tool["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
-                tools_with_cache[-1] = last_tool
-            kwargs["tools"] = tools_with_cache
+            if not self._using_codex_oauth:
+                tools_with_cache = [t for t in tools]  # shallow copy
+                if tools_with_cache:
+                    last_tool = {**tools_with_cache[-1]}  # copy last tool
+                    last_tool["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+                    tools_with_cache[-1] = last_tool
+                kwargs["tools"] = tools_with_cache
+            else:
+                kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
         resp = client.chat.completions.create(**kwargs)
@@ -220,13 +241,18 @@ class LLMClient:
                 if cache_write:
                     usage["cache_write_tokens"] = int(cache_write)
 
-        # Ensure cost is present in usage (OpenRouter includes it, but fallback if missing)
+        # Ensure cost is present in usage
         if not usage.get("cost"):
-            gen_id = resp_dict.get("id") or ""
-            if gen_id:
-                cost = self._fetch_generation_cost(gen_id)
-                if cost is not None:
-                    usage["cost"] = cost
+            if self._using_codex_oauth:
+                # For Codex OAuth, estimate cost using static pricing table in loop.py
+                # The loop will call _estimate_cost; we just need token counts
+                pass
+            else:
+                gen_id = resp_dict.get("id") or ""
+                if gen_id:
+                    cost = self._fetch_generation_cost(gen_id)
+                    if cost is not None:
+                        usage["cost"] = cost
 
         return msg, usage
 
