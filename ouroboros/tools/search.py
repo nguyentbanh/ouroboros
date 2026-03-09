@@ -52,14 +52,12 @@ def _web_search_tavily(query: str) -> str:
     url = f"https://mcp.tavily.com/mcp/?tavilyApiKey={api_key}"
 
     # Build JSON-RPC request
-    # Tavily MCP expects a call to the search tool with parameters
     request = {
         "method": "tools/call",
         "params": {
             "name": os.environ.get("TAVILY_TOOL_NAME", "tavily-search"),
             "arguments": {
                 "query": query,
-                # Allow defaults via env: TAVILY_SEARCH_DEPTH, TAVILY_MAX_RESULTS, TAVILY_INCLUDE_IMAGES
                 "search_depth": os.environ.get("TAVILY_SEARCH_DEPTH", "basic"),
                 "max_results": int(os.environ.get("TAVILY_MAX_RESULTS", "10")),
                 "include_images": os.environ.get("TAVILY_INCLUDE_IMAGES", "false").lower() == "true",
@@ -79,19 +77,47 @@ def _web_search_tavily(query: str) -> str:
             data=req_data,
             headers={
                 "Content-Type": "application/json",
-                "Accept": "application/json",
+                # Accept both JSON and event-stream per MCP spec
+                "Accept": "application/json, text/event-stream",
             },
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
-            resp_data = resp.read().decode("utf-8")
-            result = json.loads(resp_data)
+            # Read the full response; MCP servers often return text/event-stream
+            # with one or more SSE events containing JSON-RPC messages.
+            # For simple queries, the server may return a single JSON directly.
+            raw = resp.read().decode("utf-8", errors="ignore")
+            content_type = resp.headers.get("Content-Type", "")
+
+        # If it's a single JSON response (non-streaming), parse directly.
+        if "application/json" in content_type:
+            result = json.loads(raw)
+        else:
+            # Assume SSE streaming: parse all "data: {...}" lines
+            result = None
+            for line in raw.splitlines():
+                if line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(data_str)
+                        # The final result is typically in a JSON-RPC response with result field
+                        if "result" in chunk:
+                            result = chunk
+                            break
+                        # Errors may appear as a single chunk
+                        if "error" in chunk:
+                            return json.dumps({"error": f"Tavily MCP error: {chunk['error']}"}, ensure_ascii=False)
+                    except json.JSONDecodeError:
+                        continue
+            if result is None:
+                return json.dumps({"error": "No valid JSON-RPC response from Tavily MCP"}, ensure_ascii=False)
 
         if "error" in result:
             return json.dumps({"error": f"Tavily MCP error: {result['error']}"}, ensure_ascii=False)
 
-        # MCP servers commonly return results in result.content[*].text.
-        # Tavily may embed a JSON payload there with answer/results fields.
+        # Extract result payload
         payload = result.get("result", {}) or {}
 
         extracted: Dict[str, Any] = {}
@@ -110,7 +136,6 @@ def _web_search_tavily(query: str) -> str:
                 extracted = candidate
                 break
 
-        # Fallback: if no JSON was embedded, keep plain text as answer.
         if not extracted:
             extracted = {"answer": "\n\n".join(text_fragments)}
 
