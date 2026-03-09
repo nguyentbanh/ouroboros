@@ -468,6 +468,7 @@ def _check_stagnation(
     llm_trace: Dict[str, Any],
     drive_logs: pathlib.Path,
     task_id: str,
+    event_queue: Optional[queue.Queue] = None,
 ) -> bool:
     """
     Stagnation guard for evolution tasks.
@@ -580,12 +581,16 @@ def run_llm_loop(
         round_idx += 1
 
         # Get LLM response (may include tool calls)
-        text, usage, tool_calls = llm.chat(
+        msg, usage = llm.chat(
             messages=messages,
-            tools=tools.get_schemas(),
-            effort=initial_effort if round_idx == 1 else None,
+            model=llm.default_model(),
+            tools=tools.schemas(),
+            reasoning_effort=initial_effort if round_idx == 1 else "medium",
         )
         add_usage(accumulated_usage, usage)
+
+        text = msg.get("content")
+        tool_calls = msg.get("tool_calls") or []
 
         # Handle text-only final response
         if not tool_calls:
@@ -593,6 +598,13 @@ def run_llm_loop(
                 text, llm_trace, accumulated_usage
             )
             return final_text, accumulated_usage, llm_trace
+
+        # VERY IMPORTANT FIX: Append assistant message before tools
+        messages.append({
+            "role": "assistant",
+            "content": text or "",
+            "tool_calls": tool_calls
+        })
 
         # There are tool calls: execute them
         emit_progress(f"Round {round_idx}: executing {len(tool_calls)} tool call(s)...")
@@ -660,7 +672,7 @@ def run_llm_loop(
                 round_idx=round_idx,
                 messages=messages,
                 llm=llm,
-                active_model=llm.model,
+                active_model=llm.default_model(),
                 active_effort=initial_effort,
                 max_retries=3,
                 drive_logs=drive_logs,
@@ -690,5 +702,3 @@ def run_llm_loop(
 
         # Continue to next round
         # Note: tool results already appended to messages by _handle_tool_calls
-
-    # End while
