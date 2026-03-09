@@ -71,12 +71,14 @@ def _web_search_tavily(query: str) -> str:
         import urllib.error
 
         req_data = json.dumps(request).encode("utf-8")
+        # Debug: print the request we're about to send
+        print("DEBUG: Sending to Tavily:", req_data.decode('utf-8', errors='ignore')[:300])
+
         req = urllib.request.Request(
             url,
             data=req_data,
             headers={
                 "Content-Type": "application/json",
-                # Order matters: text/event-stream first
                 "Accept": "text/event-stream, application/json",
                 "User-Agent": "Mozilla/5.0 (compatible; Ouroboros/1.0)",
                 "Authorization": f"Bearer {api_key}",
