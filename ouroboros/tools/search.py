@@ -31,7 +31,6 @@ def _web_search_openai(query: str) -> str:
                 for block in item.get("content", []) or []:
                     if block.get("type") in ("output_text", "text"):
                         text += block.get("text", "")
-                        # OpenAI Responses may include source annotations in the message
                         for annotation in block.get("annotations", []):
                             if annotation.get("type") == "url_citation":
                                 sources.append({
@@ -51,7 +50,6 @@ def _web_search_tavily(query: str) -> str:
 
     url = f"https://mcp.tavily.com/mcp/?tavilyApiKey={api_key}"
 
-    # Build JSON-RPC request
     request = {
         "method": "tools/call",
         "params": {
@@ -77,24 +75,26 @@ def _web_search_tavily(query: str) -> str:
             data=req_data,
             headers={
                 "Content-Type": "application/json",
-                # Accept both JSON and event-stream per MCP spec
                 "Accept": "application/json, text/event-stream",
             },
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
-            # Read the full response; MCP servers often return text/event-stream
-            # with one or more SSE events containing JSON-RPC messages.
-            # For simple queries, the server may return a single JSON directly.
             raw = resp.read().decode("utf-8", errors="ignore")
-            content_type = resp.headers.get("Content-Type", "")
 
-        # If it's a single JSON response (non-streaming), parse directly.
-        if "application/json" in content_type:
-            result = json.loads(raw)
-        else:
-            # Assume SSE streaming: parse all "data: {...}" lines
-            result = None
+        # Try to parse as a single JSON-RPC response first
+        result = None
+        stripped = raw.lstrip()
+        if stripped.startswith('{'):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict) and ("result" in parsed or "error" in parsed):
+                    result = parsed
+            except json.JSONDecodeError:
+                pass
+
+        # If not a direct JSON, parse as SSE stream
+        if result is None:
             for line in raw.splitlines():
                 if line.startswith("data: "):
                     data_str = line[6:].strip()
@@ -102,11 +102,9 @@ def _web_search_tavily(query: str) -> str:
                         continue
                     try:
                         chunk = json.loads(data_str)
-                        # The final result is typically in a JSON-RPC response with result field
                         if "result" in chunk:
                             result = chunk
                             break
-                        # Errors may appear as a single chunk
                         if "error" in chunk:
                             return json.dumps({"error": f"Tavily MCP error: {chunk['error']}"}, ensure_ascii=False)
                     except json.JSONDecodeError:
@@ -117,7 +115,7 @@ def _web_search_tavily(query: str) -> str:
         if "error" in result:
             return json.dumps({"error": f"Tavily MCP error: {result['error']}"}, ensure_ascii=False)
 
-        # Extract result payload
+        # Extract payload from MCP result
         payload = result.get("result", {}) or {}
 
         extracted: Dict[str, Any] = {}
@@ -127,15 +125,17 @@ def _web_search_tavily(query: str) -> str:
             if isinstance(block, dict) and isinstance(block.get("text"), str):
                 text_fragments.append(block["text"])
 
+        # Try to parse each text fragment as JSON; first valid dict wins
         for txt in text_fragments:
             try:
                 candidate = json.loads(txt)
+                if isinstance(candidate, dict):
+                    extracted = candidate
+                    break
             except Exception:
                 continue
-            if isinstance(candidate, dict):
-                extracted = candidate
-                break
 
+        # If no embedded JSON, use concatenated text as answer
         if not extracted:
             extracted = {"answer": "\n\n".join(text_fragments)}
 
