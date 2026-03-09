@@ -75,14 +75,16 @@ def _web_search_tavily(query: str) -> str:
             data=req_data,
             headers={
                 "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
+                # Accept both JSON and SSE; no spaces to be safe
+                "Accept": "application/json,text/event-stream",
+                "User-Agent": "Mozilla/5.0 (compatible; Ouroboros/1.0)",
             },
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
 
-        # Try to parse as a single JSON-RPC response first
+        # Try direct JSON response first
         result = None
         stripped = raw.lstrip()
         if stripped.startswith('{'):
@@ -93,7 +95,7 @@ def _web_search_tavily(query: str) -> str:
             except json.JSONDecodeError:
                 pass
 
-        # If not a direct JSON, parse as SSE stream
+        # If not direct JSON, parse as SSE stream
         if result is None:
             for line in raw.splitlines():
                 if line.startswith("data: "):
@@ -115,7 +117,6 @@ def _web_search_tavily(query: str) -> str:
         if "error" in result:
             return json.dumps({"error": f"Tavily MCP error: {result['error']}"}, ensure_ascii=False)
 
-        # Extract payload from MCP result
         payload = result.get("result", {}) or {}
 
         extracted: Dict[str, Any] = {}
@@ -125,7 +126,6 @@ def _web_search_tavily(query: str) -> str:
             if isinstance(block, dict) and isinstance(block.get("text"), str):
                 text_fragments.append(block["text"])
 
-        # Try to parse each text fragment as JSON; first valid dict wins
         for txt in text_fragments:
             try:
                 candidate = json.loads(txt)
@@ -135,7 +135,6 @@ def _web_search_tavily(query: str) -> str:
             except Exception:
                 continue
 
-        # If no embedded JSON, use concatenated text as answer
         if not extracted:
             extracted = {"answer": "\n\n".join(text_fragments)}
 
