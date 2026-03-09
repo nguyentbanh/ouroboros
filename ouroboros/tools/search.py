@@ -75,8 +75,8 @@ def _web_search_tavily(query: str) -> str:
             data=req_data,
             headers={
                 "Content-Type": "application/json",
-                # Accept both JSON and SSE; no spaces to be safe
-                "Accept": "application/json,text/event-stream",
+                # Explicitly list both with space per MCP spec
+                "Accept": "application/json, text/event-stream",
                 "User-Agent": "Mozilla/5.0 (compatible; Ouroboros/1.0)",
             },
             method="POST"
@@ -95,8 +95,8 @@ def _web_search_tavily(query: str) -> str:
             except json.JSONDecodeError:
                 pass
 
-        # If not direct JSON, parse as SSE stream
         if result is None:
+            # Parse as SSE stream
             for line in raw.splitlines():
                 if line.startswith("data: "):
                     data_str = line[6:].strip()
