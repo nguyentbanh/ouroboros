@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from openai import RateLimitError, APIError, APIConnectionError, APITimeoutError
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -129,6 +130,25 @@ class LLMClient:
 
         self._client = None
 
+        # Fallback configuration (for OpenRouter rate-limit resilience)
+        self._primary_model = os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
+        self._fallback_chain = []
+        self._fallback_index = 0
+        self._max_retries = 3
+        self._base_backoff = 1.0
+        if not self._using_codex_oauth:
+            fb_str = os.environ.get("OUROBOROS_MODEL_FALLBACKS", "")
+            if fb_str:
+                self._fallback_chain = [m.strip() for m in fb_str.split(",") if m.strip()]
+            try:
+                self._max_retries = int(os.environ.get("OUROBOROS_FALLBACK_MAX_RETRIES", "3"))
+            except ValueError:
+                pass
+            try:
+                self._base_backoff = float(os.environ.get("OUROBOROS_FALLBACK_BASE_BACKOFF", "1.0"))
+            except ValueError:
+                pass
+
     def _get_client(self):
         if self._client is None:
             from openai import OpenAI
@@ -181,7 +201,7 @@ class LLMClient:
         max_tokens: int = 16384,
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
+        """Single LLM call with optional fallback chain for rate limits. Returns: (response_message_dict, usage_dict with cost)."""
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
 
@@ -217,7 +237,49 @@ class LLMClient:
                 kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
-        resp = client.chat.completions.create(**kwargs)
+        # Fallback logic for rate limits (only for primary model in OpenRouter mode)
+        use_fallback = (model == self._primary_model) and bool(self._fallback_chain) and not self._using_codex_oauth
+        if use_fallback:
+            models_to_try = [self._primary_model] + self._fallback_chain
+        else:
+            models_to_try = [model]
+
+        last_exception = None
+        for attempt_idx, attempt_model in enumerate(models_to_try):
+            try:
+                # Prepare kwargs without model for this attempt
+                attempt_kwargs = {k: v for k, v in kwargs.items() if k != "model"}
+                resp = client.chat.completions.create(model=attempt_model, **attempt_kwargs)
+                # On success, update fallback index if using fallback
+                if use_fallback:
+                    self._fallback_index = attempt_idx
+                break
+            except Exception as e:
+                last_exception = e
+                # Determine if error is retryable
+                retryable = False
+                status = getattr(e, 'status_code', None)
+                if status in (429, 500, 502, 503, 504):
+                    retryable = True
+                elif isinstance(e, (RateLimitError, APIError, APIConnectionError, APITimeoutError)):
+                    retryable = True
+
+                # If not retryable or last model, re-raise
+                if not retryable or attempt_idx == len(models_to_try) - 1:
+                    raise
+
+                # Log fallback event and backoff
+                log.warning(
+                    f"Model '{attempt_model}' failed with {type(e).__name__} (status={status}). "
+                    f"Falling back to next model (attempt {attempt_idx+1}/{len(models_to_try)})..."
+                )
+                backoff_seconds = self._base_backoff * (2 ** attempt_idx)
+                time.sleep(backoff_seconds)
+                continue
+
+        if last_exception is not None and 'resp' not in locals():
+            raise last_exception
+
         resp_dict = resp.model_dump()
         usage = resp_dict.get("usage") or {}
         choices = resp_dict.get("choices") or [{}]
@@ -269,7 +331,7 @@ class LLMClient:
 
         Args:
             prompt: Text instruction for the model
-            images: List of image dicts. Each dict must have either:
+            images: List of image dicts. Each must have either:
                 - {"url": "https://..."} — for URL images
                 - {"base64": "<b64>", "mime": "image/png"} — for base64 images
             model: VLM-capable model ID
