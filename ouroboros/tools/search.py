@@ -48,12 +48,12 @@ def _web_search_tavily(query: str) -> str:
     if not api_key:
         return json.dumps({"error": "TAVILY_API_KEY not set; Tavily search unavailable."})
 
-    url = f"https://mcp.tavily.com/mcp/?tavilyApiKey={api_key}"
+    url = "https://mcp.tavily.com/mcp"
 
     request = {
         "method": "tools/call",
         "params": {
-            "name": os.environ.get("TAVILY_TOOL_NAME", "tavily-search"),
+            "name": os.environ.get("TAVILY_TOOL_NAME", "tavily_search"),
             "arguments": {
                 "query": query,
                 "search_depth": os.environ.get("TAVILY_SEARCH_DEPTH", "basic"),
@@ -75,9 +75,10 @@ def _web_search_tavily(query: str) -> str:
             data=req_data,
             headers={
                 "Content-Type": "application/json",
-                # Explicitly list both with space per MCP spec
                 "Accept": "application/json, text/event-stream",
                 "User-Agent": "Mozilla/5.0 (compatible; Ouroboros/1.0)",
+                # Use API key as Bearer token per MCP spec
+                "Authorization": f"Bearer {api_key}",
             },
             method="POST"
         )
