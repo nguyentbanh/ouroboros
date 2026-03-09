@@ -56,7 +56,7 @@ def _web_search_tavily(query: str) -> str:
     request = {
         "method": "tools/call",
         "params": {
-            "name": "tavily-search",
+            "name": os.environ.get("TAVILY_TOOL_NAME", "tavily-search"),
             "arguments": {
                 "query": query,
                 # Allow defaults via env: TAVILY_SEARCH_DEPTH, TAVILY_MAX_RESULTS, TAVILY_INCLUDE_IMAGES
@@ -90,14 +90,50 @@ def _web_search_tavily(query: str) -> str:
         if "error" in result:
             return json.dumps({"error": f"Tavily MCP error: {result['error']}"}, ensure_ascii=False)
 
-        # Tavily returns results in the 'content' field
-        content = result.get("result", {})
-        answer = content.get("answer", "") or content.get("text", "")
+        # MCP servers commonly return results in result.content[*].text.
+        # Tavily may embed a JSON payload there with answer/results fields.
+        payload = result.get("result", {}) or {}
+
+        extracted: Dict[str, Any] = {}
+        blocks = payload.get("content", []) or []
+        text_fragments: List[str] = []
+        for block in blocks:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                text_fragments.append(block["text"])
+
+        for txt in text_fragments:
+            try:
+                candidate = json.loads(txt)
+            except Exception:
+                continue
+            if isinstance(candidate, dict):
+                extracted = candidate
+                break
+
+        # Fallback: if no JSON was embedded, keep plain text as answer.
+        if not extracted:
+            extracted = {"answer": "\n\n".join(text_fragments)}
+
+        answer = (
+            extracted.get("answer", "")
+            or extracted.get("text", "")
+            or payload.get("answer", "")
+            or payload.get("text", "")
+        )
+
         sources = []
-        for src in content.get("sources", []) or []:
+        source_items = (
+            extracted.get("sources")
+            or extracted.get("results")
+            or payload.get("sources")
+            or []
+        )
+        for src in source_items:
+            if not isinstance(src, dict):
+                continue
             sources.append({
                 "url": src.get("url", ""),
-                "title": src.get("title", ""),
+                "title": src.get("title", "") or src.get("name", ""),
             })
 
         return json.dumps({
