@@ -67,22 +67,25 @@ def _web_search_tavily(query: str) -> str:
     }
 
     try:
-        import requests
+        import urllib.request
+        import urllib.error
 
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream, application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
+        req_data = json.dumps(request).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=req_data,
+            headers={
+                "Content-Type": "application/json",
+                # Order matters: text/event-stream first
+                "Accept": "text/event-stream, application/json",
+                "User-Agent": "Mozilla/5.0 (compatible; Ouroboros/1.0)",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
 
-        resp = requests.post(url, json=request, headers=headers, timeout=30)
-        raw = resp.text
-
-        # HTTP error?
-        if not resp.ok:
-            return json.dumps({"error": f"Tavily HTTP {resp.status_code}: {raw}"}, ensure_ascii=False)
-
-        # Try direct JSON response
         result = None
         stripped = raw.lstrip()
         if stripped.startswith('{'):
@@ -94,7 +97,6 @@ def _web_search_tavily(query: str) -> str:
                 pass
 
         if result is None:
-            # Parse as SSE stream
             for line in raw.splitlines():
                 if line.startswith("data: "):
                     data_str = line[6:].strip()
@@ -163,8 +165,8 @@ def _web_search_tavily(query: str) -> str:
             "sources": sources
         }, ensure_ascii=False, indent=2)
 
-    except requests.RequestException as e:
-        return json.dumps({"error": f"Tavily request failed: {repr(e)}"}, ensure_ascii=False)
+    except urllib.error.HTTPError as e:
+        return json.dumps({"error": f"Tavily HTTP {e.code}: {e.read().decode('utf-8', errors='ignore')}"}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": repr(e)}, ensure_ascii=False)
 
