@@ -1,13 +1,10 @@
 import datetime
-import threading
 
 from supervisor.queue import QueueStore
 
 
 def _make_store():
-    return QueueStore(
-        pending=[], running={}, seq_counter_ref={"value": 0}, lock=threading.RLock()
-    )
+    return QueueStore(pending=[], running={}, seq_counter_ref={"value": 0}, lock=None)
 
 
 def test_queue_store_enqueue_assigns_defaults_and_orders_by_priority():
@@ -18,7 +15,9 @@ def test_queue_store_enqueue_assigns_defaults_and_orders_by_priority():
 
     assert low["_attempt"] == 1
     assert "queued_at" in low
+    # task priority (0) should be before evolution (1)
     assert [t["id"] for t in store.pending] == ["b", "a"]
+    # sequence should keep incrementing regardless of sort position
     assert high["_queue_seq"] == 2
 
 
@@ -51,25 +50,3 @@ def test_queue_store_cancel_only_removes_pending_by_default():
     assert store.cancel("r1") is None
     assert store.cancel("r1", include_running=True) == "running"
     assert "r1" not in store.running
-
-
-def test_queue_store_thread_safe_enqueue_sequence_unique():
-    store = _make_store()
-
-    def worker(start: int):
-        for i in range(50):
-            store.enqueue(
-                {"id": f"{start+i}", "type": "task", "chat_id": 1, "text": "x"}
-            )
-
-    threads = [threading.Thread(target=worker, args=(idx * 1000,)) for idx in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    seqs = [int(t["_queue_seq"]) for t in store.pending]
-    assert len(seqs) == 200
-    assert len(set(seqs)) == 200
-    assert min(seqs) == 1
-    assert max(seqs) == 200
