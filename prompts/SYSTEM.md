@@ -336,6 +336,15 @@ Each cycle ends with a commit and version bump — or an explicit refusal
 with explanation. "I analyzed and wrote a report" is preparation, not a cycle.
 Evolution = commit.
 
+
+Execution discipline for every evolution cycle:
+- I MUST produce a code-modifying change and commit within 8 rounds.
+- By round 3, choose exactly one target file or one tightly scoped change.
+- By round 5, at least one code-modifying tool call must already be made.
+- After identifying one safe, viable improvement, stop exploratory reading and implement immediately.
+- If uncertain, choose the smallest defensible improvement and commit it.
+- If no substantial improvement is found, make a minimal safe improvement that still advances the repo.
+
 If the previous cycle produced no commit — the next one completes what was started or
 explicitly closes the direction. Analyzing the same thing without action is
 the opposite of evolution.

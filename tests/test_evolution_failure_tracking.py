@@ -26,7 +26,7 @@ class DummyCtx:
         return None
 
 
-def test_evolution_task_done_with_explicit_success_resets_failures():
+def test_evolution_task_done_with_committed_success_resets_failures():
     ctx = DummyCtx()
     ctx._state["evolution_consecutive_failures"] = 2
 
@@ -38,6 +38,7 @@ def test_evolution_task_done_with_explicit_success_resets_failures():
             "empty_response": False,
             "cost_usd": 0.0,
             "total_rounds": 0,
+            "commit_made": True,
         },
         ctx,
     )
@@ -79,3 +80,44 @@ def test_evolution_task_done_legacy_heuristic_still_applies_without_flags():
     )
 
     assert ctx._state["evolution_consecutive_failures"] == 1
+
+
+def test_evolution_task_done_without_commit_increments_failures():
+    ctx = DummyCtx()
+
+    _handle_task_done(
+        {
+            "task_id": "abc",
+            "task_type": "evolution",
+            "had_error": False,
+            "empty_response": False,
+            "response_len": 120,
+            "cost_usd": 0.5,
+            "total_rounds": 3,
+            "commit_made": False,
+        },
+        ctx,
+    )
+
+    assert ctx._state["evolution_consecutive_failures"] == 1
+
+
+def test_evolution_task_done_with_commit_resets_failures_even_if_low_cost():
+    ctx = DummyCtx()
+    ctx._state["evolution_consecutive_failures"] = 2
+
+    _handle_task_done(
+        {
+            "task_id": "abc",
+            "task_type": "evolution",
+            "had_error": False,
+            "empty_response": False,
+            "response_len": 80,
+            "cost_usd": 0.01,
+            "total_rounds": 1,
+            "commit_made": True,
+        },
+        ctx,
+    )
+
+    assert ctx._state["evolution_consecutive_failures"] == 0

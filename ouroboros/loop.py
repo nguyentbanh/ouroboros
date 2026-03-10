@@ -126,6 +126,15 @@ MODIFYING_TOOLS = frozenset({
     "repo_commit_push",
 })
 
+COMMITTING_TOOLS = frozenset({
+    "repo_write_commit",
+    "repo_commit_push",
+})
+
+# Evolution control-loop checkpoints
+EVOLUTION_MODIFYING_TOOL_DEADLINE_ROUND = 5
+EVOLUTION_COMMIT_DEADLINE_ROUND = 8
+
 def _truncate_tool_result(result: Any) -> str:
     """
     Hard-cap tool result string to 15000 characters.
@@ -478,8 +487,8 @@ def _check_stagnation(
     if task_type != "evolution":
         return False
 
-    # Number of rounds after which we require at least one modifying tool call
-    STAGNATION_LIMIT = 10
+    # Number of rounds after which we require at least one modifying tool call.
+    STAGNATION_LIMIT = EVOLUTION_MODIFYING_TOOL_DEADLINE_ROUND
 
     if round_idx < STAGNATION_LIMIT:
         return False
@@ -574,8 +583,9 @@ def run_llm_loop(
     round_idx = 0
     max_rounds = int(os.getenv("OUROBOROS_MAX_ROUNDS", "200"))
 
-    # Stagnation guard: last modifying tool round
+    # Evolution guards
     last_modifying_round = -1
+    last_commit_round = -1
 
     def _estimate_message_tokens(msgs: List[Dict[str, Any]]) -> int:
         total = 0
@@ -726,20 +736,29 @@ def run_llm_loop(
             fn_name = tc.get("function", {}).get("name")
             if fn_name in MODIFYING_TOOLS:
                 last_modifying_round = round_idx
+            if fn_name in COMMITTING_TOOLS:
+                last_commit_round = round_idx
 
         # Check stagnation guard for evolution tasks
         if task_type == "evolution":
             # If no modifying tool in the first STAGNATION_LIMIT rounds, abort
-            if last_modifying_round == -1 and round_idx >= 10:
+            if last_modifying_round == -1 and round_idx >= EVOLUTION_MODIFYING_TOOL_DEADLINE_ROUND:
                 log.warning(
                     f"Stagnation in evolution task {task_id}: "
                     f"no modifying tool after {round_idx} rounds. Aborting."
                 )
+                recent_tools = [
+                    tc.get("function", {}).get("name")
+                    for tc in llm_trace.get("tool_calls", [])[-12:]
+                    if isinstance(tc, dict)
+                ]
                 append_jsonl(drive_logs / "events.jsonl", {
                     "ts": utc_now_iso(),
                     "type": "stagnation_abort",
                     "task_id": task_id,
                     "rounds_without_modification": round_idx,
+                    "modifying_tool_deadline_round": EVOLUTION_MODIFYING_TOOL_DEADLINE_ROUND,
+                    "recent_tool_calls": recent_tools,
                 })
                 # Notify owner
                 try:
@@ -761,9 +780,28 @@ def run_llm_loop(
                 # Return a final message indicating abort
                 return (
                     f"🛑 Evolution task aborted: no code-modifying tool calls after {round_idx} rounds. "
+                    f"Deadline is round {EVOLUTION_MODIFYING_TOOL_DEADLINE_ROUND}. "
                     "Evolution requires concrete action. Please restart with a clear commit intent.",
                     accumulated_usage,
                     llm_trace
+                )
+
+            if last_commit_round == -1 and round_idx >= EVOLUTION_COMMIT_DEADLINE_ROUND:
+                log.warning(
+                    f"Evolution task {task_id}: no commit tool call after {round_idx} rounds. Aborting."
+                )
+                append_jsonl(drive_logs / "events.jsonl", {
+                    "ts": utc_now_iso(),
+                    "type": "evolution_deadline_abort",
+                    "task_id": task_id,
+                    "rounds_without_commit": round_idx,
+                    "commit_deadline_round": EVOLUTION_COMMIT_DEADLINE_ROUND,
+                })
+                return (
+                    f"🛑 Evolution task aborted: no commit tool call after {round_idx} rounds. "
+                    f"Commit deadline is round {EVOLUTION_COMMIT_DEADLINE_ROUND}.",
+                    accumulated_usage,
+                    llm_trace,
                 )
 
         # Check budget limits after this round

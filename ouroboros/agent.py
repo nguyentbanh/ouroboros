@@ -521,6 +521,11 @@ class OuroborosAgent:
             "ts": utc_now_iso(),
         })
 
+        commit_made = any(
+            isinstance(tc, dict) and tc.get("tool") in {"repo_write_commit", "repo_commit_push"}
+            for tc in llm_trace.get("tool_calls", [])
+        )
+
         self._pending_events.append({
             "type": "task_done",
             "task_id": task.get("id"),
@@ -528,6 +533,7 @@ class OuroborosAgent:
             "had_error": bool(had_error),
             "empty_response": bool(empty_response),
             "response_len": len(text or ""),
+            "commit_made": bool(commit_made),
             "cost_usd": round(float(usage.get("cost") or 0), 6),
             "total_rounds": int(usage.get("rounds") or 0),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
@@ -542,6 +548,7 @@ class OuroborosAgent:
             "had_error": bool(had_error),
             "empty_response": bool(empty_response),
             "response_len": len(text or ""),
+            "commit_made": bool(commit_made),
             "cost_usd": round(float(usage.get("cost") or 0), 6),
             "total_rounds": int(usage.get("rounds") or 0),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
