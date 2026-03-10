@@ -12,7 +12,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.5.0 | [Landing Page](https://joi-lab.github.io/ouroboros/)
+**Version:** 6.5.1 | [Landing Page](https://joi-lab.github.io/ouroboros/)
 
 ---
 
@@ -228,7 +228,7 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
-### v6.5.0 -- Codex OAuth Integration
+### v6.5.1 -- Codex OAuth Integration
 
 - **Added Codex OAuth support**: LLMClient now recognizes `OUROBOROS_USE_CODEX_OAUTH` and `CODEX_OAUTH_TOKEN` environment variables. When enabled, the agent uses OpenAI's API directly with the Codex token instead of OpenRouter.
 - Maintained OpenRouter as the default backend; no configuration change required for existing deployments.
