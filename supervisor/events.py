@@ -102,18 +102,20 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         had_error = bool(evt.get("had_error"))
         empty_response = bool(evt.get("empty_response"))
         response_len = int(evt.get("response_len") or 0)
+        commit_made = bool(evt.get("commit_made"))
 
         if had_error or empty_response:
             is_success = False
-        elif "had_error" in evt or "empty_response" in evt:
-            # New explicit status present and clean => success.
-            is_success = True
+        elif "had_error" in evt or "empty_response" in evt or "commit_made" in evt:
+            # Explicit status: evolution succeeds only when it finished cleanly
+            # AND produced a commit.
+            is_success = commit_made
         else:
             # Backward compatibility for old workers that don't send flags.
             is_success = (cost > 0.10 and rounds >= 1)
 
         if is_success:
-            # Success: reset failure counter
+            # Success: reset failure counter only after committed evolution pass
             st["evolution_consecutive_failures"] = 0
             ctx.save_state(st)
         else:
@@ -131,6 +133,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
                     "had_error": had_error,
                     "empty_response": empty_response,
                     "response_len": response_len,
+                    "commit_made": commit_made,
                     "cost_usd": cost,
                     "rounds": rounds,
                 },
