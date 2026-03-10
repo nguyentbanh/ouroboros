@@ -577,8 +577,53 @@ def run_llm_loop(
     # Stagnation guard: last modifying tool round
     last_modifying_round = -1
 
+    def _estimate_message_tokens(msgs: List[Dict[str, Any]]) -> int:
+        total = 0
+        for msg in msgs:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        total += estimate_tokens(str(block.get("text", "")))
+            else:
+                total += estimate_tokens(str(content))
+            total += 6
+        return total
+
     while True:
         round_idx += 1
+
+        # Apply compaction requested by compact_context tool before next LLM turn.
+        # The tool stores keep_last_n on ToolContext as _pending_compaction.
+        pending_compaction = getattr(getattr(tools, "_ctx", None), "_pending_compaction", None)
+        if pending_compaction:
+            try:
+                keep_recent = max(2, min(int(pending_compaction), 20))
+                before_tokens = _estimate_message_tokens(messages)
+                messages = compact_tool_history_llm(messages, keep_recent=keep_recent)
+                after_tokens = _estimate_message_tokens(messages)
+                setattr(tools._ctx, "_pending_compaction", None)
+                emit_progress(
+                    f"Context compacted: ~{before_tokens} → ~{after_tokens} tokens (keep_last_n={keep_recent})."
+                )
+            except Exception:
+                log.warning("Failed to apply pending context compaction", exc_info=True)
+
+        # Auto-compaction safeguard for runaway context growth.
+        auto_compact_threshold = int(os.getenv("OUROBOROS_AUTO_COMPACT_TOKENS", "160000"))
+        if auto_compact_threshold > 0:
+            estimated_tokens = _estimate_message_tokens(messages)
+            if estimated_tokens > auto_compact_threshold:
+                keep_recent = int(os.getenv("OUROBOROS_AUTO_COMPACT_KEEP_RECENT", "6"))
+                keep_recent = max(2, min(keep_recent, 20))
+                compacted = compact_tool_history(messages, keep_recent=keep_recent)
+                compacted_tokens = _estimate_message_tokens(compacted)
+                if compacted_tokens < estimated_tokens:
+                    messages = compacted
+                    emit_progress(
+                        f"Auto-compacted context: ~{estimated_tokens} → ~{compacted_tokens} tokens "
+                        f"(threshold={auto_compact_threshold}, keep_recent={keep_recent})."
+                    )
 
         # Get LLM response (may include tool calls)
         msg, usage = llm.chat(
