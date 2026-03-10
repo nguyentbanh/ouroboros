@@ -53,8 +53,7 @@ def main():
         print("🚨 Release Invariant Violation (Bible P7)")
         print(f"   VERSION:           {version}")
         print(f"   README.md version: {readme_version}")
-        print("
-Fix: bump both to the same version, then commit again.")
+        print("\nFix: bump both to the same version, then commit again.")
         print("   Option A: Use the version from README.md:")
         print(f"     echo {readme_version} > VERSION")
         print("   Option B: Use the version from VERSION file:")
