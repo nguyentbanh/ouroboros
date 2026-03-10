@@ -95,15 +95,24 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     if task_type == "evolution":
         st = ctx.load_state()
         # Check if task produced meaningful output (successful evolution)
-        # A successful evolution should have:
-        # - Reasonable cost (not near-zero, indicating actual work)
-        # - Multiple rounds (not just 1 retry)
+        # Prefer explicit error/empty flags from agent; fallback to legacy
+        # cost/rounds heuristic when those flags are unavailable.
         cost = float(evt.get("cost_usd") or 0)
         rounds = int(evt.get("total_rounds") or 0)
+        had_error = bool(evt.get("had_error"))
+        empty_response = bool(evt.get("empty_response"))
+        response_len = int(evt.get("response_len") or 0)
 
-        # Heuristic: if cost > $0.10 and rounds >= 1, consider it successful
-        # Empty responses typically cost < $0.01 and have 0-1 rounds
-        if cost > 0.10 and rounds >= 1:
+        if had_error or empty_response:
+            is_success = False
+        elif "had_error" in evt or "empty_response" in evt:
+            # New explicit status present and clean => success.
+            is_success = True
+        else:
+            # Backward compatibility for old workers that don't send flags.
+            is_success = (cost > 0.10 and rounds >= 1)
+
+        if is_success:
             # Success: reset failure counter
             st["evolution_consecutive_failures"] = 0
             ctx.save_state(st)
@@ -119,6 +128,9 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
                     "type": "evolution_task_failure_tracked",
                     "task_id": task_id,
                     "consecutive_failures": failures,
+                    "had_error": had_error,
+                    "empty_response": empty_response,
+                    "response_len": response_len,
                     "cost_usd": cost,
                     "rounds": rounds,
                 },
