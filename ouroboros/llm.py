@@ -1,7 +1,13 @@
 """
 Ouroboros — LLM client.
 
-The only module that communicates with the LLM API (OpenRouter or OpenAI Codex).
+The only module that communicates with the LLM API.
+Supported backends:
+- OpenRouter (default)
+- OpenAI (Codex OAuth mode)
+- Groq (OpenAI-compatible API)
+- NVIDIA NIM (OpenAI-compatible API)
+
 Contract: chat(), default_model(), available_models(), add_usage().
 """
 
@@ -10,8 +16,9 @@ from __future__ import annotations
 import logging
 import os
 import time
-from openai import RateLimitError, APIError, APIConnectionError, APITimeoutError
 from typing import Any, Dict, List, Optional, Tuple
+
+from openai import APIConnectionError, APIError, APITimeoutError, RateLimitError
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +111,7 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
 
 
 class LLMClient:
-    """OpenRouter API wrapper (or OpenAI Codex via OAuth). All LLM calls go through this class."""
+    """Unified LLM wrapper with multi-provider support. All LLM calls go through this class."""
 
     def __init__(
         self,
@@ -128,7 +135,7 @@ class LLMClient:
             self._using_codex_oauth = False
             log.info("LLMClient initialized in OpenRouter mode")
 
-        self._client = None
+        self._clients: Dict[str, Any] = {}
 
         # Fallback configuration (for OpenRouter rate-limit resilience)
         self._primary_model = os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
@@ -156,10 +163,32 @@ class LLMClient:
             except ValueError:
                 pass
 
-    def _get_client(self):
-        if self._client is None:
-            from openai import OpenAI
-            self._client = OpenAI(
+    def _parse_model_provider(self, model: str) -> Tuple[str, str]:
+        """Parse model string into (provider, provider_model).
+
+        Supported explicit prefixes:
+        - groq/<model>
+        - nvidia/<model>
+        - openrouter/<model>
+        If no prefix is provided, OpenRouter is used.
+        """
+        m = str(model or "").strip()
+        if m.startswith("groq/"):
+            return "groq", m[len("groq/"):]
+        if m.startswith("nvidia/"):
+            return "nvidia", m[len("nvidia/"):]
+        if m.startswith("openrouter/"):
+            return "openrouter", m[len("openrouter/"):]
+        return "openrouter", m
+
+    def _get_client(self, provider: str):
+        if provider in self._clients:
+            return self._clients[provider]
+
+        from openai import OpenAI
+
+        if provider == "openrouter":
+            client = OpenAI(
                 base_url=self._base_url,
                 api_key=self._api_key,
                 default_headers={
@@ -167,7 +196,21 @@ class LLMClient:
                     "X-Title": "Ouroboros",
                 },
             )
-        return self._client
+        elif provider == "groq":
+            client = OpenAI(
+                base_url=os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+                api_key=os.environ.get("GROQ_API_KEY", ""),
+            )
+        elif provider == "nvidia":
+            client = OpenAI(
+                base_url=os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+                api_key=os.environ.get("NVIDIA_API_KEY", ""),
+            )
+        else:
+            raise ValueError(f"Unknown LLM provider: {provider}")
+
+        self._clients[provider] = client
+        return client
 
     def _fetch_generation_cost(self, generation_id: str) -> Optional[float]:
         """Fetch cost from OpenRouter Generation API as fallback."""
@@ -209,30 +252,14 @@ class LLMClient:
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call with optional fallback chain for rate limits. Returns: (response_message_dict, usage_dict with cost)."""
-        client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
 
-        extra_body: Dict[str, Any] = {
-            "reasoning": {"effort": effort, "exclude": True},
-        }
-
-        # Pin Anthropic models to Anthropic provider for prompt caching (OpenRouter only)
-        if not self._using_codex_oauth and model.startswith("anthropic/"):
-            extra_body["provider"] = {
-                "order": ["Anthropic"],
-                "allow_fallbacks": False,
-                "require_parameters": True,
-            }
-
         kwargs: Dict[str, Any] = {
-            "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "extra_body": extra_body,
         }
         if tools:
-            # Add cache_control to last tool for Anthropic prompt caching (OpenRouter only)
-            # This caches all tool schemas (they never change between calls)
+            # Add cache_control to last tool for OpenRouter prompt caching (tools are stable between calls)
             if not self._using_codex_oauth:
                 tools_with_cache = [t for t in tools]  # shallow copy
                 if tools_with_cache:
@@ -254,9 +281,26 @@ class LLMClient:
         last_exception = None
         for attempt_idx, attempt_model in enumerate(models_to_try):
             try:
+                provider, provider_model = self._parse_model_provider(attempt_model)
+                client = self._get_client(provider)
+
                 # Prepare kwargs without model for this attempt
-                attempt_kwargs = {k: v for k, v in kwargs.items() if k != "model"}
-                resp = client.chat.completions.create(model=attempt_model, **attempt_kwargs)
+                attempt_kwargs = dict(kwargs)
+
+                if provider == "openrouter":
+                    extra_body: Dict[str, Any] = {
+                        "reasoning": {"effort": effort, "exclude": True},
+                    }
+                    # Pin Anthropic models to Anthropic provider for prompt caching (OpenRouter only)
+                    if provider_model.startswith("anthropic/"):
+                        extra_body["provider"] = {
+                            "order": ["Anthropic"],
+                            "allow_fallbacks": False,
+                            "require_parameters": True,
+                        }
+                    attempt_kwargs["extra_body"] = extra_body
+
+                resp = client.chat.completions.create(model=provider_model, **attempt_kwargs)
                 # On success, update fallback index if using fallback
                 if use_fallback:
                     self._fallback_index = attempt_idx
@@ -317,8 +361,9 @@ class LLMClient:
                 # The loop will call _estimate_cost; we just need token counts
                 pass
             else:
+                provider, _ = self._parse_model_provider(model)
                 gen_id = resp_dict.get("id") or ""
-                if gen_id:
+                if provider == "openrouter" and gen_id:
                     cost = self._fetch_generation_cost(gen_id)
                     if cost is not None:
                         usage["cost"] = cost

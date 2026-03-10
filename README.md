@@ -191,6 +191,8 @@ Full text: [BIBLE.md](BIBLE.md)
 | `OPENAI_API_KEY` | Enables the `web_search` tool |
 | `ANTHROPIC_API_KEY` | Enables Claude Code CLI for code editing |
 | `CODEX_OAUTH_TOKEN` | Enables direct OpenAI Codex access when `OUROBOROS_USE_CODEX_OAUTH=true` |
+| `GROQ_API_KEY` | Enables direct Groq API usage for models prefixed with `groq/` |
+| `NVIDIA_API_KEY` | Enables direct NVIDIA NIM API usage for models prefixed with `nvidia/` |
 
 ### Optional Configuration (environment variables)
 
@@ -207,6 +209,24 @@ Full text: [BIBLE.md](BIBLE.md)
 | `OUROBOROS_MAX_ROUNDS` | `200` | Maximum LLM rounds per task |
 | `OUROBOROS_MODEL_FALLBACK_LIST` | `google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6` | Fallback model chain for empty responses |
 | `OUROBOROS_USE_CODEX_OAUTH` | `false` | Set to `true` to use `CODEX_OAUTH_TOKEN` with OpenAI API instead of OpenRouter |
+| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Override Groq API base URL (OpenAI-compatible) |
+| `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Override NVIDIA NIM API base URL (OpenAI-compatible) |
+
+### Multi-provider model routing
+
+`LLMClient` supports provider-prefixed model names in `OUROBOROS_MODEL` and fallback lists:
+
+- `groq/<model_id>` → routed to Groq API (`GROQ_API_KEY`)
+- `nvidia/<model_id>` → routed to NVIDIA NIM (`NVIDIA_API_KEY`)
+- `openrouter/<model_id>` → forced through OpenRouter
+- `<model_id>` (no prefix) → OpenRouter (default)
+
+Example:
+
+```bash
+OUROBOROS_MODEL=groq/llama-3.3-70b-versatile
+OUROBOROS_MODEL_FALLBACK_LIST=openrouter/meta-llama/llama-3.3-70b-instruct:free,nvidia/meta/llama-3.1-70b-instruct
+```
 
 ---
 
