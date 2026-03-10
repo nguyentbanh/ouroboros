@@ -13,6 +13,7 @@ import pathlib
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from supervisor.state import (
@@ -55,13 +56,126 @@ QUEUE_SEQ_COUNTER_REF: Dict[str, int] = {"value": 0}
 _queue_lock = threading.Lock()
 
 
+@dataclass
+class QueueStore:
+    """Small stateful wrapper around pending/running queue structures."""
+
+    pending: List[Dict[str, Any]]
+    running: Dict[str, Dict[str, Any]]
+    seq_counter_ref: Dict[str, int]
+    lock: threading.Lock
+
+    def _next_seq(self) -> int:
+        self.seq_counter_ref["value"] += 1
+        return int(self.seq_counter_ref["value"])
+
+    def sort_pending(self) -> None:
+        self.pending.sort(key=_queue_sort_key)
+
+    def enqueue(self, task: Dict[str, Any], front: bool = False) -> Dict[str, Any]:
+        t = dict(task)
+        seq = self._next_seq()
+        t.setdefault("priority", _task_priority(str(t.get("type") or "")))
+        _att = t.get("_attempt")
+        t.setdefault("_attempt", int(_att) if _att is not None else 1)
+        t["_queue_seq"] = -seq if front else seq
+        t["queued_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self.pending.append(t)
+        self.sort_pending()
+        return t
+
+    def dequeue(self) -> Optional[Dict[str, Any]]:
+        if not self.pending:
+            return None
+        self.sort_pending()
+        return self.pending.pop(0)
+
+    def has_task_type(self, task_type: str) -> bool:
+        tt = str(task_type or "")
+        if any(str(t.get("type") or "") == tt for t in self.pending):
+            return True
+        for meta in self.running.values():
+            task = meta.get("task") if isinstance(meta, dict) else None
+            if isinstance(task, dict) and str(task.get("type") or "") == tt:
+                return True
+        return False
+
+    def cancel(self, task_id: str, include_running: bool = False) -> Optional[str]:
+        for i, task in enumerate(list(self.pending)):
+            if str(task.get("id") or "") == str(task_id):
+                self.pending.pop(i)
+                return "pending"
+        if include_running and str(task_id) in self.running:
+            self.running.pop(str(task_id), None)
+            return "running"
+        return None
+
+    def snapshot(self, reason: str = "") -> Dict[str, Any]:
+        pending_rows = []
+        for t in self.pending:
+            pending_rows.append({
+                "id": t.get("id"), "type": t.get("type"), "priority": t.get("priority"),
+                "attempt": t.get("_attempt"), "queued_at": t.get("queued_at"),
+                "queue_seq": t.get("_queue_seq"),
+                "task": {
+                    "id": t.get("id"), "type": t.get("type"), "chat_id": t.get("chat_id"),
+                    "text": t.get("text"), "priority": t.get("priority"),
+                    "_attempt": t.get("_attempt"), "review_reason": t.get("review_reason"),
+                    "review_source_task_id": t.get("review_source_task_id"),
+                },
+            })
+        running_rows = []
+        now = time.time()
+        for task_id, meta in self.running.items():
+            task = meta.get("task") if isinstance(meta, dict) else {}
+            started = float(meta.get("started_at") or 0.0) if isinstance(meta, dict) else 0.0
+            hb = float(meta.get("last_heartbeat_at") or 0.0) if isinstance(meta, dict) else 0.0
+            running_rows.append({
+                "id": task_id, "type": task.get("type"), "priority": task.get("priority"),
+                "attempt": meta.get("attempt"), "worker_id": meta.get("worker_id"),
+                "runtime_sec": round(max(0.0, now - started), 2) if started > 0 else 0.0,
+                "heartbeat_lag_sec": round(max(0.0, now - hb), 2) if hb > 0 else None,
+                "soft_sent": bool(meta.get("soft_sent")), "task": task,
+            })
+        return {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "reason": reason,
+            "pending_count": len(self.pending), "running_count": len(self.running),
+            "pending": pending_rows, "running": running_rows,
+        }
+
+    def restore(self, snapshot: Dict[str, Any], max_age_sec: int = 900) -> int:
+        if self.pending or not isinstance(snapshot, dict):
+            return 0
+        ts = str(snapshot.get("ts") or "")
+        ts_unix = parse_iso_to_ts(ts)
+        if ts_unix is None:
+            return 0
+        if (time.time() - ts_unix) > max_age_sec:
+            return 0
+        restored = 0
+        for row in (snapshot.get("pending") or []):
+            task = row.get("task") if isinstance(row, dict) else None
+            if not isinstance(task, dict):
+                continue
+            if not task.get("id") or not task.get("chat_id"):
+                continue
+            self.enqueue(task)
+            restored += 1
+        return restored
+
+
+_QUEUE_STORE = QueueStore(PENDING, RUNNING, QUEUE_SEQ_COUNTER_REF, _queue_lock)
+
+
 def init_queue_refs(pending: List[Dict[str, Any]], running: Dict[str, Dict[str, Any]],
                     seq_counter_ref: Dict[str, int]) -> None:
     """Called by workers.py to provide references to queue data structures."""
-    global PENDING, RUNNING, QUEUE_SEQ_COUNTER_REF
+    global PENDING, RUNNING, QUEUE_SEQ_COUNTER_REF, _QUEUE_STORE
     PENDING = pending
     RUNNING = running
     QUEUE_SEQ_COUNTER_REF = seq_counter_ref
+    _QUEUE_STORE = QueueStore(PENDING, RUNNING, QUEUE_SEQ_COUNTER_REF, _queue_lock)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +201,7 @@ def _queue_sort_key(task: Dict[str, Any]) -> Tuple[int, int]:
 
 def sort_pending() -> None:
     """Sort PENDING queue by priority."""
-    PENDING.sort(key=_queue_sort_key)
+    _QUEUE_STORE.sort_pending()
 
 
 # ---------------------------------------------------------------------------
@@ -96,65 +210,17 @@ def sort_pending() -> None:
 
 def enqueue_task(task: Dict[str, Any], front: bool = False) -> Dict[str, Any]:
     """Add task to PENDING queue."""
-    t = dict(task)
-    QUEUE_SEQ_COUNTER_REF["value"] += 1
-    seq = QUEUE_SEQ_COUNTER_REF["value"]
-    t.setdefault("priority", _task_priority(str(t.get("type") or "")))
-    _att = t.get("_attempt")
-    t.setdefault("_attempt", int(_att) if _att is not None else 1)
-    t["_queue_seq"] = -seq if front else seq
-    t["queued_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    PENDING.append(t)
-    sort_pending()
-    return t
+    return _QUEUE_STORE.enqueue(task, front=front)
 
 
 def queue_has_task_type(task_type: str) -> bool:
     """Check if a task of given type exists in PENDING or RUNNING."""
-    tt = str(task_type or "")
-    if any(str(t.get("type") or "") == tt for t in PENDING):
-        return True
-    for meta in RUNNING.values():
-        task = meta.get("task") if isinstance(meta, dict) else None
-        if isinstance(task, dict) and str(task.get("type") or "") == tt:
-            return True
-    return False
+    return _QUEUE_STORE.has_task_type(task_type)
 
 
 def persist_queue_snapshot(reason: str = "") -> None:
     """Save PENDING and RUNNING to snapshot file."""
-    pending_rows = []
-    for t in PENDING:
-        pending_rows.append({
-            "id": t.get("id"), "type": t.get("type"), "priority": t.get("priority"),
-            "attempt": t.get("_attempt"), "queued_at": t.get("queued_at"),
-            "queue_seq": t.get("_queue_seq"),
-            "task": {
-                "id": t.get("id"), "type": t.get("type"), "chat_id": t.get("chat_id"),
-                "text": t.get("text"), "priority": t.get("priority"),
-                "_attempt": t.get("_attempt"), "review_reason": t.get("review_reason"),
-                "review_source_task_id": t.get("review_source_task_id"),
-            },
-        })
-    running_rows = []
-    now = time.time()
-    for task_id, meta in RUNNING.items():
-        task = meta.get("task") if isinstance(meta, dict) else {}
-        started = float(meta.get("started_at") or 0.0) if isinstance(meta, dict) else 0.0
-        hb = float(meta.get("last_heartbeat_at") or 0.0) if isinstance(meta, dict) else 0.0
-        running_rows.append({
-            "id": task_id, "type": task.get("type"), "priority": task.get("priority"),
-            "attempt": meta.get("attempt"), "worker_id": meta.get("worker_id"),
-            "runtime_sec": round(max(0.0, now - started), 2) if started > 0 else 0.0,
-            "heartbeat_lag_sec": round(max(0.0, now - hb), 2) if hb > 0 else None,
-            "soft_sent": bool(meta.get("soft_sent")), "task": task,
-        })
-    payload = {
-        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "reason": reason,
-        "pending_count": len(PENDING), "running_count": len(RUNNING),
-        "pending": pending_rows, "running": running_rows,
-    }
+    payload = _QUEUE_STORE.snapshot(reason=reason)
     try:
         atomic_write_text(QUEUE_SNAPSHOT_PATH, json.dumps(payload, ensure_ascii=False, indent=2))
     except Exception:
@@ -182,23 +248,7 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
         if not QUEUE_SNAPSHOT_PATH.exists():
             return 0
         snap = json.loads(QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
-        if not isinstance(snap, dict):
-            return 0
-        ts = str(snap.get("ts") or "")
-        ts_unix = parse_iso_to_ts(ts)
-        if ts_unix is None:
-            return 0
-        if (time.time() - ts_unix) > max_age_sec:
-            return 0
-        restored = 0
-        for row in (snap.get("pending") or []):
-            task = row.get("task") if isinstance(row, dict) else None
-            if not isinstance(task, dict):
-                continue
-            if not task.get("id") or not task.get("chat_id"):
-                continue
-            enqueue_task(task)
-            restored += 1
+        restored = _QUEUE_STORE.restore(snap, max_age_sec=max_age_sec)
         if restored > 0:
             append_jsonl(
                 DRIVE_ROOT / "logs" / "supervisor.jsonl",
@@ -221,11 +271,10 @@ def cancel_task_by_id(task_id: str) -> bool:
     from supervisor import workers
 
     with _queue_lock:
-        for i, t in enumerate(list(PENDING)):
-            if t["id"] == task_id:
-                PENDING.pop(i)
-                persist_queue_snapshot(reason="cancel_pending")
-                return True
+        status = _QUEUE_STORE.cancel(task_id)
+        if status == "pending":
+            persist_queue_snapshot(reason="cancel_pending")
+            return True
 
         # For RUNNING tasks, need to terminate worker
         for w in workers.WORKERS.values():
