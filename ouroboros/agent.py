@@ -394,6 +394,8 @@ class OuroborosAgent:
 
         drive_logs = self.env.drive_path("logs")
         heartbeat_stop = self._start_task_heartbeat_loop(str(task.get("id") or ""))
+        had_error = False
+        empty_response = False
 
         try:
             # --- Prepare task context ---
@@ -427,6 +429,7 @@ class OuroborosAgent:
                     drive_root=self.env.drive_root,
                 )
             except Exception as e:
+                had_error = True
                 tb = traceback.format_exc()
                 append_jsonl(drive_logs / "events.jsonl", {
                     "ts": utc_now_iso(), "type": "task_error",
@@ -437,10 +440,14 @@ class OuroborosAgent:
 
             # Empty response guard
             if not isinstance(text, str) or not text.strip():
+                empty_response = True
                 text = "⚠️ Model returned an empty response. Try rephrasing your request."
 
             # Emit events for supervisor
-            self._emit_task_results(task, text, usage, llm_trace, start_time, drive_logs)
+            self._emit_task_results(
+                task, text, usage, llm_trace, start_time, drive_logs,
+                had_error=had_error, empty_response=empty_response,
+            )
             return list(self._pending_events)
 
         finally:
@@ -469,6 +476,8 @@ class OuroborosAgent:
         self, task: Dict[str, Any], text: str,
         usage: Dict[str, Any], llm_trace: Dict[str, Any],
         start_time: float, drive_logs: pathlib.Path,
+        had_error: bool = False,
+        empty_response: bool = False,
     ) -> None:
         """Emit all end-of-task events to supervisor."""
         # NOTE: per-round llm_usage events are already emitted in loop.py
@@ -516,6 +525,9 @@ class OuroborosAgent:
             "type": "task_done",
             "task_id": task.get("id"),
             "task_type": task.get("type"),
+            "had_error": bool(had_error),
+            "empty_response": bool(empty_response),
+            "response_len": len(text or ""),
             "cost_usd": round(float(usage.get("cost") or 0), 6),
             "total_rounds": int(usage.get("rounds") or 0),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
@@ -527,6 +539,9 @@ class OuroborosAgent:
             "type": "task_done",
             "task_id": task.get("id"),
             "task_type": task.get("type"),
+            "had_error": bool(had_error),
+            "empty_response": bool(empty_response),
+            "response_len": len(text or ""),
             "cost_usd": round(float(usage.get("cost") or 0), 6),
             "total_rounds": int(usage.get("rounds") or 0),
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
