@@ -590,6 +590,33 @@ def run_llm_loop(
             total += 6
         return total
 
+    def _compact_oversized_tool_messages(
+        msgs: List[Dict[str, Any]],
+        max_tool_chars: int,
+    ) -> List[Dict[str, Any]]:
+        """Emergency compaction: trim any oversized tool payload in-place copy."""
+        if max_tool_chars <= 0:
+            return msgs
+
+        compacted: List[Dict[str, Any]] = []
+        for msg in msgs:
+            if msg.get("role") != "tool":
+                compacted.append(msg)
+                continue
+
+            content = str(msg.get("content") or "")
+            if len(content) <= max_tool_chars:
+                compacted.append(msg)
+                continue
+
+            clipped = (
+                f"{content[:max_tool_chars]}\n\n"
+                f"...[truncated {len(content) - max_tool_chars} chars for context budget]"
+            )
+            compacted.append({**msg, "content": clipped})
+
+        return compacted
+
     while True:
         round_idx += 1
 
@@ -611,18 +638,48 @@ def run_llm_loop(
 
         # Auto-compaction safeguard for runaway context growth.
         auto_compact_threshold = int(os.getenv("OUROBOROS_AUTO_COMPACT_TOKENS", "160000"))
+        auto_compact_target = int(
+            os.getenv("OUROBOROS_AUTO_COMPACT_TARGET_TOKENS", str(auto_compact_threshold))
+        )
+        auto_compact_target = max(1000, auto_compact_target)
         if auto_compact_threshold > 0:
             estimated_tokens = _estimate_message_tokens(messages)
             if estimated_tokens > auto_compact_threshold:
-                keep_recent = int(os.getenv("OUROBOROS_AUTO_COMPACT_KEEP_RECENT", "6"))
-                keep_recent = max(2, min(keep_recent, 20))
-                compacted = compact_tool_history(messages, keep_recent=keep_recent)
-                compacted_tokens = _estimate_message_tokens(compacted)
-                if compacted_tokens < estimated_tokens:
-                    messages = compacted
+                initial_tokens = estimated_tokens
+                best_messages = messages
+                best_tokens = estimated_tokens
+
+                # First pass: progressively compact more rounds.
+                configured_keep = int(os.getenv("OUROBOROS_AUTO_COMPACT_KEEP_RECENT", "6"))
+                configured_keep = max(2, min(configured_keep, 20))
+                keep_options = [configured_keep, 4, 3, 2]
+                seen_keep = set()
+                for keep_recent in keep_options:
+                    if keep_recent in seen_keep:
+                        continue
+                    seen_keep.add(keep_recent)
+                    candidate = compact_tool_history(messages, keep_recent=keep_recent)
+                    candidate_tokens = _estimate_message_tokens(candidate)
+                    if candidate_tokens < best_tokens:
+                        best_messages = candidate
+                        best_tokens = candidate_tokens
+                    if candidate_tokens <= auto_compact_target:
+                        break
+
+                # Second pass: hard-cap oversized tool payloads if still too large.
+                if best_tokens > auto_compact_target:
+                    max_tool_chars = int(os.getenv("OUROBOROS_AUTO_COMPACT_TOOL_CHARS", "12000"))
+                    emergency = _compact_oversized_tool_messages(best_messages, max_tool_chars)
+                    emergency_tokens = _estimate_message_tokens(emergency)
+                    if emergency_tokens < best_tokens:
+                        best_messages = emergency
+                        best_tokens = emergency_tokens
+
+                if best_tokens < initial_tokens:
+                    messages = best_messages
                     emit_progress(
-                        f"Auto-compacted context: ~{estimated_tokens} → ~{compacted_tokens} tokens "
-                        f"(threshold={auto_compact_threshold}, keep_recent={keep_recent})."
+                        f"Auto-compacted context: ~{initial_tokens} → ~{best_tokens} tokens "
+                        f"(threshold={auto_compact_threshold}, target={auto_compact_target})."
                     )
 
         # Get LLM response (may include tool calls)
