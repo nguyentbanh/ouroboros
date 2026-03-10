@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""
+Pre-commit hook: enforce VERSION == README.md version (Bible P7 - Release Invariant)
+
+This hook runs before every commit on the ouroboros branch.
+It fails fast if the VERSION file and README.md version are out of sync.
+
+To bypass (emergency only): git commit --no-verify
+"""
+
+import sys
+import re
+from pathlib import Path
+
+def read_version(path):
+    """Read VERSION file, return stripped string."""
+    try:
+        return Path(path).read_text().strip()
+    except Exception as e:
+        print(f"❌ Cannot read {path}: {e}")
+        sys.exit(1)
+
+def extract_readme_version(readme_path):
+    """Extract version from README.md 'Version: X.Y.Z' line."""
+    try:
+        content = Path(readme_path).read_text()
+        # Look for "**Version:** X.Y.Z" or "Version: X.Y.Z" pattern
+        match = re.search(r'Version:\s*([0-9]+\.[0-9]+\.[0-9]+)', content)
+        if match:
+            return match.group(1)
+        # Fallback: try to find in the header line with bold
+        match2 = re.search(r'\*\*Version:\*\*\s*([0-9]+\.[0-9]+\.[0-9]+)', content)
+        if match2:
+            return match2.group(1)
+        print(f"❌ Could not extract version from {readme_path}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Cannot read {readme_path}: {e}")
+        sys.exit(1)
+
+def main():
+    repo_root = Path(__file__).parent.parent.parent
+    version_file = repo_root / 'VERSION'
+    readme_file = repo_root / 'README.md'
+
+    version = read_version(version_file)
+    readme_version = extract_readme_version(readme_file)
+
+    if version == readme_version:
+        # Invariant satisfied
+        sys.exit(0)
+    else:
+        print("🚨 Release Invariant Violation (Bible P7)")
+        print(f"   VERSION:           {version}")
+        print(f"   README.md version: {readme_version}")
+        print("
+Fix: bump both to the same version, then commit again.")
+        print("   Option A: Use the version from README.md:")
+        print(f"     echo {readme_version} > VERSION")
+        print("   Option B: Use the version from VERSION file:")
+        print(f"     sed -i 's/Version: .*/Version: {version}/' README.md")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
