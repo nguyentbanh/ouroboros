@@ -582,6 +582,15 @@ def run_llm_loop(
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     round_idx = 0
     max_rounds = int(os.getenv("OUROBOROS_MAX_ROUNDS", "200"))
+    if task_type == "evolution":
+        max_rounds = int(os.getenv("OUROBOROS_MAX_ROUNDS_EVOLUTION", str(max_rounds)))
+
+    evolution_low_effort = os.getenv("OUROBOROS_EVOLUTION_LOW_EFFORT", "1").lower() not in ("0", "false", "no")
+    evolution_max_tokens = int(os.getenv("OUROBOROS_EVOLUTION_MAX_TOKENS", "3072"))
+    default_max_tokens = int(os.getenv("OUROBOROS_MAX_TOKENS", "16384"))
+
+    evolution_core_tools_rounds = int(os.getenv("OUROBOROS_EVOLUTION_CORE_TOOLS_ROUNDS", "2"))
+    evolution_core_tools_rounds = max(0, evolution_core_tools_rounds)
 
     # Evolution guards
     last_modifying_round = -1
@@ -693,11 +702,24 @@ def run_llm_loop(
                     )
 
         # Get LLM response (may include tool calls)
+        tool_schemas = tools.schemas()
+        if task_type == "evolution" and round_idx <= evolution_core_tools_rounds:
+            tool_schemas = tools.schemas(core_only=True)
+
+        effort_for_round = initial_effort if round_idx == 1 else "medium"
+        if task_type == "evolution" and round_idx == 1 and evolution_low_effort:
+            effort_for_round = "low"
+
+        max_tokens_for_round = default_max_tokens
+        if task_type == "evolution":
+            max_tokens_for_round = evolution_max_tokens
+
         msg, usage = llm.chat(
             messages=messages,
             model=llm.default_model(),
-            tools=tools.schemas(),
-            reasoning_effort=initial_effort if round_idx == 1 else "medium",
+            tools=tool_schemas,
+            reasoning_effort=effort_for_round,
+            max_tokens=max_tokens_for_round,
         )
         add_usage(accumulated_usage, usage)
 

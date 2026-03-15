@@ -564,8 +564,21 @@ def enforce_task_timeouts() -> None:
 
 
 def build_evolution_task_text(cycle: int) -> str:
-    """Build evolution task text. Minimal trigger — SYSTEM.md has the full instructions."""
-    return f"EVOLUTION #{cycle}"
+    """Build evolution task text with a concise execution checklist.
+
+    Keeps instructions short (small-model friendly) while preserving the
+    SYSTEM.md authority for deeper policy/identity constraints.
+    """
+    return (
+        f"EVOLUTION #{cycle}\n"
+        "Checklist:\n"
+        "1) Pick ONE concrete bottleneck from current code/runtime.\n"
+        "2) Implement ONE focused improvement (no broad refactor).\n"
+        "3) Run minimal validation for changed files.\n"
+        "4) Commit with clear message (what + why + expected impact).\n"
+        "5) Report result, risk, and next smallest step.\n"
+        "Stop rule: if blocked after several rounds, summarize blocker and stop."
+    )
 
 
 def build_review_task_text(reason: str) -> str:

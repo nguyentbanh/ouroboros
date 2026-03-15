@@ -207,6 +207,15 @@ Full text: [BIBLE.md](BIBLE.md)
 | `OUROBOROS_MAX_WORKERS` | `5` | Maximum number of parallel worker processes |
 | `OUROBOROS_BG_BUDGET_PCT` | `10` | Percentage of total budget allocated to background consciousness |
 | `OUROBOROS_MAX_ROUNDS` | `200` | Maximum LLM rounds per task |
+| `OUROBOROS_MAX_ROUNDS_EVOLUTION` | `200` | Override maximum rounds for evolution tasks |
+| `OUROBOROS_MAX_TOKENS` | `16384` | Default max completion tokens per LLM round |
+| `OUROBOROS_EVOLUTION_MAX_TOKENS` | `3072` | Max completion tokens per evolution round (smaller-model friendly) |
+| `OUROBOROS_EVOLUTION_LOW_EFFORT` | `1` | Use low reasoning effort on first evolution round |
+| `OUROBOROS_EVOLUTION_CORE_TOOLS_ROUNDS` | `2` | First N evolution rounds expose only core tools to reduce prompt size |
+| `OUROBOROS_BIBLE_CHARS` | task-dependent | Global cap for BIBLE.md chars in system context |
+| `OUROBOROS_EVOLVE_BIBLE_CHARS` | `50000` | BIBLE.md char cap specifically for evolution tasks |
+| `OUROBOROS_README_CHARS` | task-dependent | Global cap for README.md chars in system context |
+| `OUROBOROS_EVOLVE_README_CHARS` | `22000` | README.md char cap specifically for evolution tasks |
 | `OUROBOROS_MODEL_FALLBACK_LIST` | `google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6` | Fallback model chain for empty responses |
 | `OUROBOROS_USE_CODEX_OAUTH` | `false` | Set to `true` to use `CODEX_OAUTH_TOKEN` with OpenAI API instead of OpenRouter |
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Override Groq API base URL (OpenAI-compatible) |
