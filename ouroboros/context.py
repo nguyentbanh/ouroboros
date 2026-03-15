@@ -151,6 +151,51 @@ def _build_recent_sections(memory: Memory, env: Any, task_id: str = "") -> List[
     return sections
 
 
+def _extract_markdown_section(md_text: str, heading: str) -> str:
+    """Extract markdown section content for an H2 heading (## Heading)."""
+    if not md_text.strip() or not heading.strip():
+        return ""
+
+    lines = md_text.splitlines()
+    target_prefix = f"## {heading.strip()}"
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip().startswith(target_prefix):
+            start = i
+            break
+    if start is None:
+        return ""
+
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith("## "):
+            end = i
+            break
+    return "\n".join(lines[start:end]).strip()
+
+
+def _build_compact_readme_for_evolution(readme_md: str, max_chars: int) -> str:
+    """Build compact README context for evolution tasks."""
+    if max_chars <= 0:
+        return ""
+
+    preferred_sections = [
+        "Architecture",
+        "Quick Start",
+        "Optional Configuration (environment variables)",
+        "Telegram Bot Commands",
+    ]
+    chunks: List[str] = []
+    for heading in preferred_sections:
+        sec = _extract_markdown_section(readme_md, heading)
+        if sec:
+            chunks.append(sec)
+
+    if not chunks:
+        return clip_text(readme_md, max_chars)
+    return clip_text("\n\n".join(chunks), max_chars)
+
+
 def _build_health_invariants(env: Any) -> str:
     """Build health invariants section for LLM-first self-detection.
 
@@ -320,12 +365,32 @@ def build_llm_messages(
     # BIBLE.md always included (Constitution requires it for every decision)
     # README.md only for evolution/review (architecture context)
     needs_full_context = task_type in ("evolution", "review", "scheduled")
+    # Small-model friendly evolution context: keep constitutional + architecture
+    # context compact by default and override via env vars when needed.
+    bible_chars_default = 180000
+    readme_chars_default = 180000
+    if task_type == "evolution":
+        bible_chars_default = 50000
+        readme_chars_default = 22000
+
+    bible_chars = int(os.getenv("OUROBOROS_BIBLE_CHARS", str(bible_chars_default)))
+    if task_type == "evolution":
+        bible_chars = int(os.getenv("OUROBOROS_EVOLVE_BIBLE_CHARS", str(bible_chars)))
+
+    readme_chars = int(os.getenv("OUROBOROS_README_CHARS", str(readme_chars_default)))
+    if task_type == "evolution":
+        readme_chars = int(os.getenv("OUROBOROS_EVOLVE_README_CHARS", str(readme_chars)))
+
     static_text = (
         base_prompt + "\n\n"
-        + "## BIBLE.md\n\n" + clip_text(bible_md, 180000)
+        + "## BIBLE.md\n\n" + clip_text(bible_md, bible_chars)
     )
     if needs_full_context:
-        static_text += "\n\n## README.md\n\n" + clip_text(readme_md, 180000)
+        if task_type == "evolution":
+            compact_readme = _build_compact_readme_for_evolution(readme_md, readme_chars)
+            static_text += "\n\n## README.md (compact for evolution)\n\n" + compact_readme
+        else:
+            static_text += "\n\n## README.md\n\n" + clip_text(readme_md, readme_chars)
 
     # Semi-stable content: identity, scratchpad, knowledge
     # These change ~once per task, not per round
